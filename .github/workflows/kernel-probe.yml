@@ -1,0 +1,86 @@
+name: kernel toolchain probe
+
+# Validates the Darwin 22 kernel build path on a GitHub macOS runner:
+#   * installs the public KDK that matches the runner's macOS build
+#   * checks the CTF tools the XNU build wants
+#   * assembles the pinned XNU source with the houji patch and overlay
+#   * attempts the kernel build and publishes the log tail
+#
+# The runner image has Xcode but no KDK; dortania/KdkSupportPkg publishes the
+# Kernel Debug Kit as a plain release asset, so no Apple ID is involved.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the matching KDK
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/kdk.dmg" \
+            "https://github.com/dortania/KdkSupportPkg/releases/download/25G83/Kernel_Debug_Kit_26.6.2_build_25G83.dmg"
+          ls -l "$RUNNER_TEMP/kdk.dmg"
+          hdiutil attach -nobrowse -quiet "$RUNNER_TEMP/kdk.dmg"
+          vol=$(ls -d /Volumes/*Kernel_Debug_Kit* /Volumes/KDK* 2>/dev/null | head -1)
+          echo "volume: $vol"
+          ls -la "$vol" | head -20
+          pkg=$(ls "$vol"/*.pkg | head -1)
+          echo "pkg: $pkg"
+          sudo installer -pkg "$pkg" -target /
+          hdiutil detach "$vol" -quiet || true
+          ls /Library/Developer/KDKs
+
+      - name: Report the KDK contents
+        run: |
+          kdk=$(ls -d /Library/Developer/KDKs/*.kdk | head -1)
+          echo "KDK: $kdk"
+          ls "$kdk"
+          find "$kdk" -maxdepth 4 -name 'ctf*' 2>/dev/null | head -10
+          find "$kdk" -maxdepth 4 -name 'KernelSupport' -type d 2>/dev/null | head -3
+
+      - name: Clone the pinned XNU revision
+        run: |
+          set -euo pipefail
+          git init xnu
+          git -C xnu remote add origin https://github.com/apple-oss-distributions/xnu.git
+          git -C xnu fetch --depth 1 origin 1b191cb58250d0705d8a51287127505aa4bc0789
+          git -C xnu checkout -q FETCH_HEAD
+          git -C xnu rev-parse HEAD
+
+      - name: Assemble the kernel source tree
+        run: python3 tools/prepare-sources.py kernel --upstream xnu --output .deps/kernel
+
+      - name: Attempt the kernel build
+        env:
+          HOUJI_XNU: ${{ github.workspace }}/.deps/kernel
+          HOUJI_BUILD_ROOT: ${{ github.workspace }}/out/kernel
+          HOUJI_JOBS: "6"
+        run: |
+          set -uo pipefail
+          kdk=$(ls -d /Library/Developer/KDKs/*.kdk | head -1)
+          export HOUJI_KDK="$kdk"
+          mkdir -p .fakeroot/usr/local/bin
+          for t in ctfconvert ctfmerge ctfdump; do
+            found=$(find "$kdk" -name "$t" -type f 2>/dev/null | head -1)
+            echo "$t -> ${found:-MISSING}"
+            if [ -n "$found" ]; then ln -sf "$found" ".fakeroot/usr/local/bin/$t"; fi
+          done
+          export HOUJI_FAKEROOT="$PWD/.fakeroot"
+          mkdir -p "$HOUJI_BUILD_ROOT"
+          bash tools/build-kernel.sh > "$RUNNER_TEMP/kernel-build.log" 2>&1
+          rc=$?
+          echo "build exit: $rc"
+          tail -120 "$RUNNER_TEMP/kernel-build.log"
+          exit $rc
+
+      - name: Kernel artifacts
+        if: always()
+        run: |
+          find out -maxdepth 4 -type f \( -name '*.log' -o -name 'mach.*' -o -name 'kernel*' \) -printf '%10s %p\n' 2>/dev/null | sort -rn | head -20
