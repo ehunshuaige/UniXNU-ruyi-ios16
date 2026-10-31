@@ -82,12 +82,22 @@ jobs:
           set +e
           kdk=$(ls -d /Library/Developer/KDKs/*.kdk 2>/dev/null | head -1)
           export HOUJI_KDK="$kdk"
-          mkdir -p .fakeroot/usr/local/bin
-          for t in ctfconvert ctfmerge ctfdump; do
-            found=$(find "$kdk" -name "$t" -type f 2>/dev/null | head -1)
-            echo "$t -> ${found:-MISSING}"
-            if [ -n "$found" ]; then ln -sf "$found" ".fakeroot/usr/local/bin/$t"; fi
+          mkdir -p .fakeroot/usr/local/bin .fakeroot/usr/local/libexec
+          for pair in "availability.pl:usr/local/libexec" "ctfconvert:usr/local/bin" "ctfmerge:usr/local/bin" "ctfdump:usr/local/bin" "unifdef:usr/local/bin"; do
+            name=${pair%%:*}; dest=${pair##*:}
+            found=$(find "$kdk" -name "$name" 2>/dev/null | head -1)
+            echo "kdk/$name -> ${found:-MISSING}"
+            [ -n "$found" ] && ln -sf "$found" ".fakeroot/$dest/$name"
           done
+          if [ ! -e .fakeroot/usr/local/libexec/availability.pl ]; then
+            echo "== building AvailabilityVersions =="
+            git init AvailabilityVersions
+            git -C AvailabilityVersions remote add origin https://github.com/apple-oss-distributions/AvailabilityVersions.git
+            git -C AvailabilityVersions fetch --depth 1 origin main
+            git -C AvailabilityVersions checkout -q FETCH_HEAD
+            make -C AvailabilityVersions install DSTROOT="$PWD/.fakeroot" 2>&1 | tail -20
+          fi
+          find .fakeroot -maxdepth 4 | head -30
           export HOUJI_FAKEROOT="$PWD/.fakeroot"
           mkdir -p "$HOUJI_BUILD_ROOT"
           bash tools/build-kernel.sh > "$RUNNER_TEMP/kernel-build.log" 2>&1
