@@ -21,29 +21,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the matching KDK
+      - name: Fetch and inspect the KDK disk image
         run: |
-          set -euo pipefail
+          set -uo pipefail
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/kdk.dmg" \
             "https://github.com/dortania/KdkSupportPkg/releases/download/25G83/Kernel_Debug_Kit_26.6.2_build_25G83.dmg"
           ls -l "$RUNNER_TEMP/kdk.dmg"
-          hdiutil attach -nobrowse -quiet "$RUNNER_TEMP/kdk.dmg"
-          vol=$(ls -d /Volumes/*Kernel_Debug_Kit* /Volumes/KDK* 2>/dev/null | head -1)
-          echo "volume: $vol"
-          ls -la "$vol" | head -20
-          pkg=$(ls "$vol"/*.pkg | head -1)
-          echo "pkg: $pkg"
-          sudo installer -pkg "$pkg" -target /
-          hdiutil detach "$vol" -quiet || true
-          ls /Library/Developer/KDKs
+          file "$RUNNER_TEMP/kdk.dmg"
+          echo "== imageinfo =="
+          hdiutil imageinfo "$RUNNER_TEMP/kdk.dmg" 2>&1 | head -30
+          echo "== attach =="
+          hdiutil attach -nobrowse -readonly "$RUNNER_TEMP/kdk.dmg" 2>&1 | tail -10
+          echo "== volumes =="
+          ls /Volumes
+          echo "== find pkg =="
+          find /Volumes -maxdepth 3 -name '*.pkg' 2>/dev/null | head -5
+          echo "== find kdk executables on mounted volumes =="
+          find /Volumes -maxdepth 6 -name 'ctfconvert' 2>/dev/null | head -3
 
-      - name: Report the KDK contents
+      - name: Install the KDK package
         run: |
-          kdk=$(ls -d /Library/Developer/KDKs/*.kdk | head -1)
-          echo "KDK: $kdk"
-          ls "$kdk"
-          find "$kdk" -maxdepth 4 -name 'ctf*' 2>/dev/null | head -10
-          find "$kdk" -maxdepth 4 -name 'KernelSupport' -type d 2>/dev/null | head -3
+          set -uo pipefail
+          vol=$(ls -d /Volumes/*[Kk]ernel*[Dd]ebug* 2>/dev/null | head -1)
+          if [ -z "$vol" ]; then vol=$(ls -d /Volumes/*/ 2>/dev/null | grep -v -E '^/Volumes/(Macintosh|Recovery)' | head -1); fi
+          echo "volume: $vol"
+          pkg=$(ls "$vol"/*.pkg 2>/dev/null | head -1)
+          echo "pkg: $pkg"
+          if [ -n "$pkg" ]; then
+            sudo installer -pkg "$pkg" -target / 2>&1 | tail -10
+          fi
+          hdiutil detach "$vol" -quiet 2>/dev/null || true
+          echo "== installed KDKs =="
+          ls /Library/Developer/KDKs 2>/dev/null || echo MISSING
+          kdk=$(ls -d /Library/Developer/KDKs/*.kdk 2>/dev/null | head -1)
+          echo "kdk root: $kdk"
+          if [ -n "$kdk" ]; then
+            ls "$kdk"
+            find "$kdk" -maxdepth 5 -name 'ctf*' 2>/dev/null | head -10
+            find "$kdk" -maxdepth 5 -name 'KernelSupport' -type d 2>/dev/null | head -3
+          fi
 
       - name: Clone the pinned XNU revision
         run: |
@@ -64,11 +80,11 @@ jobs:
           HOUJI_JOBS: "6"
         run: |
           set -uo pipefail
-          kdk=$(ls -d /Library/Developer/KDKs/*.kdk | head -1)
+          kdk=$(ls -d /Library/Developer/KDKs/*.kdk 2>/dev/null | head -1)
           export HOUJI_KDK="$kdk"
           mkdir -p .fakeroot/usr/local/bin
           for t in ctfconvert ctfmerge ctfdump; do
-            found=$(find "$kdk" -name "$t" -type f 2>/dev/null | head -1)
+            found=$(find "$kdk" /Applications/Xcode_26.6.app -name "$t" -type f 2>/dev/null | head -1)
             echo "$t -> ${found:-MISSING}"
             if [ -n "$found" ]; then ln -sf "$found" ".fakeroot/usr/local/bin/$t"; fi
           done
@@ -77,10 +93,10 @@ jobs:
           bash tools/build-kernel.sh > "$RUNNER_TEMP/kernel-build.log" 2>&1
           rc=$?
           echo "build exit: $rc"
-          tail -120 "$RUNNER_TEMP/kernel-build.log"
+          tail -150 "$RUNNER_TEMP/kernel-build.log"
           exit $rc
 
       - name: Kernel artifacts
         if: always()
         run: |
-          find out -maxdepth 4 -type f \( -name '*.log' -o -name 'mach.*' -o -name 'kernel*' \) -printf '%10s %p\n' 2>/dev/null | sort -rn | head -20
+          find out -maxdepth 5 -type f \( -name '*.log' -o -name 'mach.*' -o -name 'kernel*' \) -printf '%10s %p\n' 2>/dev/null | sort -rn | head -20
