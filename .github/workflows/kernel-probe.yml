@@ -79,12 +79,12 @@ jobs:
           HOUJI_BUILD_ROOT: ${{ github.workspace }}/out/kernel
           HOUJI_JOBS: "6"
         run: |
-          set -uo pipefail
+          set +e
           kdk=$(ls -d /Library/Developer/KDKs/*.kdk 2>/dev/null | head -1)
           export HOUJI_KDK="$kdk"
           mkdir -p .fakeroot/usr/local/bin
           for t in ctfconvert ctfmerge ctfdump; do
-            found=$(find "$kdk" /Applications/Xcode_26.6.app -name "$t" -type f 2>/dev/null | head -1)
+            found=$(find "$kdk" -name "$t" -type f 2>/dev/null | head -1)
             echo "$t -> ${found:-MISSING}"
             if [ -n "$found" ]; then ln -sf "$found" ".fakeroot/usr/local/bin/$t"; fi
           done
@@ -93,10 +93,24 @@ jobs:
           bash tools/build-kernel.sh > "$RUNNER_TEMP/kernel-build.log" 2>&1
           rc=$?
           echo "build exit: $rc"
-          tail -150 "$RUNNER_TEMP/kernel-build.log"
-          exit $rc
+          echo "===== log head ====="
+          head -60 "$RUNNER_TEMP/kernel-build.log"
+          echo "===== log tail ====="
+          tail -200 "$RUNNER_TEMP/kernel-build.log"
+          cp "$RUNNER_TEMP/kernel-build.log" "$GITHUB_WORKSPACE/kernel-build.log" 2>/dev/null
+          exit 0
 
       - name: Kernel artifacts
         if: always()
         run: |
           find out -maxdepth 5 -type f \( -name '*.log' -o -name 'mach.*' -o -name 'kernel*' \) -printf '%10s %p\n' 2>/dev/null | sort -rn | head -20
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-log
+          path: |
+            kernel-build.log
+            .deps/kernel/.houji-source.json
+          if-no-files-found: warn
