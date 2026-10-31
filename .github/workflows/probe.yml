@@ -1,0 +1,19 @@
+name: toolchain probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - run: sw_vers && xcodebuild -showsdks | head -30
+      - run: |
+          echo "=== ctf tools ==="
+          for t in ctfconvert ctfmerge ctfdump; do printf "%-12s %s\n" "$t" "$(xcrun --find $t 2>/dev/null || echo MISSING)"; done
+      - run: |
+          echo "=== KDK / Developer dirs ==="
+          ls /Library/Developer 2>/dev/null
+          find / -maxdepth 5 -name "Kernel.framework" -type d 2>/dev/null | head -5
+      - run: |
+          echo "=== ios sdk ==="
+          xcodebuild -showsdks 2>/dev/null | grep -i ios || true
+          ls /Applications/Xcode_26.6.app/Contents/Developer/Platforms/ 2>/dev/null
